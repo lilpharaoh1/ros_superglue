@@ -51,7 +51,7 @@ import matplotlib.cm as cm
 import torch
 import rospy
 from sensor_msgs.msg import Image
-from super_msgs.msg import MatchesStamped
+from super_msgs.msg import MatchesStamped, Feature
 from cv_bridge import CvBridge
 
 from models.matching import Matching
@@ -132,31 +132,37 @@ class SuperGlueNode:
         kpts0 = self.last_data['keypoints0'][0].cpu().detach().numpy()
         kpts1 = pred['keypoints1'][0].cpu().detach().numpy()
         matches = pred['matches0'][0].cpu().detach().numpy()
-        confidence = pred['matching_scores0'][0].cpu().detach().numpy()
+        confidences = pred['matching_scores0'][0].cpu().detach().numpy()
 
         valid = matches > -1
         mkpts0 = kpts0[valid]
         mkpts1 = kpts1[matches[valid]]
-
-        color = cm.jet(confidence[valid])
-        text = [
-            'SuperGlue',
-            'Keypoints: {}:{}'.format(len(kpts0), len(kpts1)),
-            'Matches: {}'.format(len(mkpts0))
-        ]
-
         
+        if not self.opt.no_display:
+            color = cm.jet(confidences[valid])
+            text = [
+                'SuperGlue',
+                'Keypoints: {}:{}'.format(len(kpts0), len(kpts1)),
+                'Matches: {}'.format(len(mkpts0))
+            ]
 
-        k_thresh = self.matching.superpoint.config['keypoint_threshold']
-        m_thresh = self.matching.superglue.config['match_threshold']
-        
-        out = make_matching_plot_fast(
-            self.last_frame, frame, kpts0, kpts1, mkpts0, mkpts1, color, text,
-            path=None, show_keypoints=self.opt.show_keypoints)
+            k_thresh = self.matching.superpoint.config['keypoint_threshold']
+            m_thresh = self.matching.superglue.config['match_threshold']
+            
+            out = make_matching_plot_fast(
+                self.last_frame, frame, kpts0, kpts1, mkpts0, mkpts1, color, text,
+                path=None, show_keypoints=self.opt.show_keypoints)
 
-        cv2.imshow('SuperGlue matches', out)
-        key = chr(cv2.waitKey(1) & 0xFF)
+            cv2.imshow('SuperGlue matches', out)
+            key = chr(cv2.waitKey(1) & 0xFF)
 
+        msg = MatchesStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.matches.keypoints0.features = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in mkpts0]
+        msg.matches.keypoints1.features = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in mkpts1]
+        msg.matches.confidences = [float(confidence) for confidence in confidences[valid]]
+
+        self.match_pub.publish(msg)
       
         self.last_data = {k+'0': pred[k+'1'] for k in self.keys}
         self.last_data['image0'] = frame_tensor

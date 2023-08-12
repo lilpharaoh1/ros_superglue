@@ -53,6 +53,7 @@ import rospy
 from sensor_msgs.msg import Image
 from super_msgs.msg import MatchesStamped, Feature
 from cv_bridge import CvBridge
+import numpy as np
 
 from models.matching import Matching
 from models.utils import (AverageTimer, VideoStreamer,
@@ -138,6 +139,7 @@ class SuperGlueNode:
         mkpts0 = kpts0[valid]
         mkpts1 = kpts1[matches[valid]]
         
+
         if not self.opt.no_display:
             color = cm.jet(confidences[valid])
             text = [
@@ -158,8 +160,9 @@ class SuperGlueNode:
 
         msg = MatchesStamped()
         msg.header.stamp = rospy.Time.now()
-        msg.matches.keypoints0.features = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in mkpts0]
-        msg.matches.keypoints1.features = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in mkpts1]
+        msg.matches.keypoints = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in kpts1]
+        msg.matches.prev = [int(idx) for idx in np.argwhere(np.array(valid) > 0)]
+        msg.matches.curr = [int(idx) for idx in matches[valid]]
         msg.matches.confidences = [float(confidence) for confidence in confidences[valid]]
 
         self.match_pub.publish(msg)

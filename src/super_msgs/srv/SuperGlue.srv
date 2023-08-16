@@ -1,0 +1,7 @@
+sensor_msgs/Image image0
+sensor_msgs/Image image1
+---
+Feature[] keypoints
+int16[] prev
+int16[] curr
+float64[] confidences

@@ -164,6 +164,8 @@ include_directories(
 catkin_install_python(PROGRAMS
   src/srv_superglue.py
   src/ros_superglue.py
+  src/superglue_comparison.py
+  src/orb_comparison.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

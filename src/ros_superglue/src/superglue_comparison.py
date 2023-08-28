@@ -132,11 +132,6 @@ class SuperGlueNode:
 
         pred = self.matching({**self.last_data, 'image1': frame_tensor})
 
-        # print("-----------------------------------------------")
-        # print("# of SuperPoints = ", pred['keypoints1'][0].shape)
-        # print("Scores size = ", pred['scores1'][0])
-        # print("Descriptor size = ", pred['descriptors1'][0])
-
         kpts0 = self.last_data['keypoints0'][0].cpu().detach().numpy()
         kpts1 = pred['keypoints1'][0].cpu().detach().numpy()
         matches = pred['matches0'][0].cpu().detach().numpy()
@@ -164,15 +159,6 @@ class SuperGlueNode:
 
             cv2.imshow('SuperGlue matches', out)
             key = chr(cv2.waitKey(1) & 0xFF)
-
-        msg = MatchesStamped()
-        msg.header.stamp = rospy.Time.now()
-        msg.matches.keypoints = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in kpts1]
-        msg.matches.prev = [int(idx) for idx in np.argwhere(np.array(valid) > 0)]
-        msg.matches.curr = [int(idx) for idx in matches[valid]]
-        msg.matches.confidences = [float(confidence) for confidence in confidences[valid]]
-
-        self.match_pub.publish(msg)
       
         self.last_data = {k+'0': pred[k+'1'] for k in self.keys}
         self.last_data['image0'] = frame_tensor

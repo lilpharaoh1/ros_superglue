@@ -103,12 +103,11 @@ class SuperGlueNode:
         cam_sub_topic = "/camera/image_raw"
         cam_sub_msg_type = Image
 
-        match_pub_topic = "/matches"
+        match_pub_topic = "/keypoints"
         match_pub_msg_type = MatchesStamped
 
         self.cv_bridge = CvBridge()
         self.cam_sub = rospy.Subscriber(cam_sub_topic, cam_sub_msg_type, self.cam_cb, queue_size=1, buff_size=2**24)
-        # self.kp_pub = rospy.Publisher(kp_pub_topic, kp_pub_msg_type, queue_size=1)
         self.match_pub = rospy.Publisher(match_pub_topic, match_pub_msg_type, queue_size=1)
 
     def cam_cb(self, data):
@@ -132,10 +131,10 @@ class SuperGlueNode:
 
         pred = self.matching({**self.last_data, 'image1': frame_tensor})
 
-        # print("-----------------------------------------------")
-        # print("# of SuperPoints = ", pred['keypoints1'][0].shape)
-        # print("Scores size = ", pred['scores1'][0])
-        # print("Descriptor size = ", pred['descriptors1'][0])
+        print("-----------------------------------------------")
+        print("# of SuperPoints = ", pred['keypoints1'][0].shape)
+        print("Scores size = ", pred['scores1'][0].shape)
+        print("Descriptor size = ", pred['descriptors1'][0].shape)
 
         kpts0 = self.last_data['keypoints0'][0].cpu().detach().numpy()
         kpts1 = pred['keypoints1'][0].cpu().detach().numpy()

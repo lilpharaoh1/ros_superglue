@@ -54,6 +54,8 @@ from sensor_msgs.msg import Image
 from super_msgs.msg import MatchesStamped, Feature
 from cv_bridge import CvBridge
 import numpy as np
+import json
+from time import time
 
 from models.matching import Matching
 from models.utils import (AverageTimer, VideoStreamer,
@@ -61,45 +63,31 @@ from models.utils import (AverageTimer, VideoStreamer,
 
 torch.set_grad_enabled(False)
 
+DATA_TEMPLATE = {
+                'timestamp': None,
+                'kpts0_x': [],
+                'kpts0_y': [],
+                'kpts1_x': [],
+                'kpts1_y': [],
+                'mkpts0_x': [],
+                'mkpts0_y': [],
+                'mkpts1_x': [],
+                'mkpts1_y': []
+            }
 
-class SuperGlueNode:
+
+class ORBNode:
     def __init__(self, opt):
         self.opt = opt
         print(self.opt)
 
-        if len(self.opt.resize) == 2 and self.opt.resize[1] == -1:
-            self.opt.resize = self.opt.resize[0:1]
-        if len(self.opt.resize) == 2:
-            print('Will resize to {}x{} (WxH)'.format(
-                self.opt.resize[0], self.opt.resize[1]))
-        elif len(self.opt.resize) == 1 and self.opt.resize[0] > 0:
-            print('Will resize max dimension to {}'.format(self.opt.resize[0]))
-        elif len(self.opt.resize) == 1:
-            print('Will not resize images')
-        else:
-            raise ValueError('Cannot specify more than two integers for --resize')
+        self.orb = cv2.ORB_create()
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
-        self.device = 'cuda' if torch.cuda.is_available() and not self.opt.force_cpu else 'cpu'
-        print('Running inference on device \"{}\"'.format(self.device))
-        config = {
-            'superpoint': {
-                'nms_radius': self.opt.nms_radius,
-                'keypoint_threshold': self.opt.keypoint_threshold,
-                'max_keypoints': self.opt.max_keypoints
-            },
-            'superglue': {
-                'weights': self.opt.superglue,
-                'sinkhorn_iterations': self.opt.sinkhorn_iterations,
-                'match_threshold': self.opt.match_threshold,
-            }
-        }
-        self.matching = Matching(config).eval().to(self.device)
-        self.keys = ['keypoints', 'scores', 'descriptors']
-
-        self.last_data = None
         self.last_frame = None
         self.last_image_id = None
-
+        self.prevKeypoints, self.prevDescriptors = None, None
+            
         cam_sub_topic = "/camera/image_raw"
         cam_sub_msg_type = Image
 
@@ -108,82 +96,86 @@ class SuperGlueNode:
 
         self.cv_bridge = CvBridge()
         self.cam_sub = rospy.Subscriber(cam_sub_topic, cam_sub_msg_type, self.cam_cb, queue_size=1, buff_size=2**24)
-        # self.kp_pub = rospy.Publisher(kp_pub_topic, kp_pub_msg_type, queue_size=1)
-        self.match_pub = rospy.Publisher(match_pub_topic, match_pub_msg_type, queue_size=1)
 
     def cam_cb(self, data):
-        frame = self.cv_bridge.imgmsg_to_cv2(data)
-        frame_tensor = frame2tensor(frame, self.device)
+        curr_frame = self.cv_bridge.imgmsg_to_cv2(data)
 
         if not isinstance(self.last_image_id, int):
-            self.last_data = self.matching.superpoint({'image': frame_tensor})
-            self.last_data = {k+'0': self.last_data[k] for k in self.keys}
-            self.last_data['image0'] = frame_tensor
-            self.last_frame = frame
+            self.prevKeypoints, self.prevDescriptors = self.orb.detectAndCompute(self.last_frame,None)
+            self.last_frame = curr_frame
             self.last_image_id = 0
-
             if self.opt.output_dir is not None:
                 print('==> Will write outputs to {}'.format(self.opt.output_dir))
                 Path(self.opt.output_dir).mkdir(exist_ok=True)
-
+            print("Everything Initialised...")
             return
 
         stem0, stem1 = self.last_image_id, data.header.seq - 1
 
-        pred = self.matching({**self.last_data, 'image1': frame_tensor})
+        currKeypoints, currDescriptors = self.orb.detectAndCompute(curr_frame,None)
 
-        # print("-----------------------------------------------")
-        # print("# of SuperPoints = ", pred['keypoints1'][0].shape)
-        # print("Scores size = ", pred['scores1'][0])
-        # print("Descriptor size = ", pred['descriptors1'][0])
+        matches = self.matcher.match(self.prevDescriptors, currDescriptors)
 
-        kpts0 = self.last_data['keypoints0'][0].cpu().detach().numpy()
-        kpts1 = pred['keypoints1'][0].cpu().detach().numpy()
-        matches = pred['matches0'][0].cpu().detach().numpy()
-        confidences = pred['matching_scores0'][0].cpu().detach().numpy()
+        # Initialize lists
+        mkpts0 = []
+        mkpts1 = []
 
-        valid = matches > -1
-        mkpts0 = kpts0[valid]
-        mkpts1 = kpts1[matches[valid]]
-        
+        for mat in matches:
 
-        if not self.opt.no_display:
-            color = cm.jet(confidences[valid])
+            img1_idx = mat.queryIdx
+            img2_idx = mat.trainIdx
+
+            (x1, y1) = self.prevKeypoints[img1_idx].pt
+            (x2, y2) = currKeypoints[img2_idx].pt
+
+            mkpts0.append((x1, y1))
+            mkpts1.append((x2, y2))
+
+        if not self.opt.no_display and len(mkpts0) > 0:
+            
+            color = np.random.rand(len(mkpts0), 3)
             text = [
-                'SuperGlue',
-                'Keypoints: {}:{}'.format(len(kpts0), len(kpts1)),
-                'Matches: {}'.format(len(mkpts0))
+                'ORB Extraction and Matching',
+                'Keypoints: {}:{}'.format(len(self.prevKeypoints), len(currKeypoints)),
+                'Matches: {}'.format(len(mkpts1))
             ]
 
-            k_thresh = self.matching.superpoint.config['keypoint_threshold']
-            m_thresh = self.matching.superglue.config['match_threshold']
-            
             out = make_matching_plot_fast(
-                self.last_frame, frame, kpts0, kpts1, mkpts0, mkpts1, color, text,
+                self.last_frame, curr_frame, [[[pt.pt[0]], [pt.pt[1]]] for pt in self.prevKeypoints], \
+                        [[[pt.pt[0]], [pt.pt[1]]] for pt in currKeypoints], mkpts0, mkpts1, color, text,
                 path=None, show_keypoints=self.opt.show_keypoints)
 
-            cv2.imshow('SuperGlue matches', out)
+            cv2.imshow('ORB matches', out)
             key = chr(cv2.waitKey(1) & 0xFF)
-
-        msg = MatchesStamped()
-        msg.header.stamp = rospy.Time.now()
-        msg.matches.keypoints = [Feature(x=int(pt[0]), y=int(pt[1])) for pt in kpts1]
-        msg.matches.prev = [int(idx) for idx in np.argwhere(np.array(valid) > 0)]
-        msg.matches.curr = [int(idx) for idx in matches[valid]]
-        msg.matches.confidences = [float(confidence) for confidence in confidences[valid]]
-
-        self.match_pub.publish(msg)
+            pass
       
-        self.last_data = {k+'0': pred[k+'1'] for k in self.keys}
-        self.last_data['image0'] = frame_tensor
-        self.last_frame = frame
-        self.last_image_id = (data.header.seq- 1)
+            if self.opt.output_dir is not None:
+                stem = 'matches_{:06}_{:06}'.format(stem0, stem1)
+                out_file = str(Path(self.opt.output_dir, stem + '.png'))
+                print('\nWriting image to {}'.format(out_file))
+                cv2.imwrite(out_file, out)
+                
+                # save_data = DATA_TEMPLATE
+                # save_data['timestamp'] = time()
+                # for idx in range(len(self.prevKeypoints)):
+                #     save_data['kpts0_x'].append(self.prevKeypoints[idx].pt[0])
+                #     save_data['kpts0_y'].append(self.prevKeypoints[idx].pt[1])
+                # for idx in range(len(currKeypoints)):
+                #     save_data['kpts1_x'].append(currKeypoints[idx].pt[0])
+                #     save_data['kpts1_y'].append(currKeypoints[idx].pt[1])
+                # for idx in range(len(mkpts0)):
+                #     save_data['mkpts0_x'].append(mkpts0[idx][0])
+                #     save_data['mkpts0_y'].append(mkpts0[idx][1])
+                #     save_data['mkpts1_x'].append(mkpts1[idx][0])
+                #     save_data['mkpts1_y'].append(mkpts1[idx][1])
 
-        if self.opt.output_dir is not None:
-            stem = 'matches_{:06}_{:06}'.format(stem0, stem1)
-            out_file = str(Path(self.opt.output_dir, stem + '.png'))
-            print('\nWriting image to {}'.format(out_file))
-            cv2.imwrite(out_file, out)
+                # with open(str(Path(self.opt.output_dir, stem)), "w") as fp:
+                #     json.dump(save_data , fp) 
+
+
+        self.prevKeypoints, self.prevDescriptors = currKeypoints, currDescriptors
+        self.last_frame = curr_frame
+        self.last_image_id = (data.header.seq- 1)
 
 
 if __name__=="__main__":
@@ -246,7 +238,7 @@ if __name__=="__main__":
     opt = parser.parse_args()
 
     rospy.init_node("super_point_node", anonymous=True)
-    sgn = SuperGlueNode(opt)
+    sgn = ORBNode(opt)
     rospy.sleep(0.1)
 
     rospy.spin()
